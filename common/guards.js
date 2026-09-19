@@ -6,6 +6,7 @@
 
 import { refererCheck } from './referer-check.js';
 import { isValidIP, isValidDomain, isUsablePublicIP } from './valid-ip.js';
+import { isValidApiKey } from './api-keys.js';
 import { isValidBgpPrefix } from './bgp-prefix.js';
 import { STATUS_PROVIDER_IDS } from './service-status-providers.js';
 import { DNS_RECORD_TYPE_SET } from './dns-record-types.js';
@@ -13,6 +14,13 @@ import { DNS_RECORD_TYPE_SET } from './dns-record-types.js';
 // Reject requests without an allowed referer. The error message variant
 // preserves the existing user-facing wording.
 export const requireReferer = (req, res, next) => {
+    // The /api/v1 surface is machine-consumed (curl, widgets, server-to-server)
+    // and gated by API keys instead of the referer allow-list — there is no
+    // Referer to check. req.path here is relative to the '/api' mount (and can
+    // be absent on bare req stubs, so don't assume it exists).
+    if (req.path?.startsWith('/v1/')) {
+        return next();
+    }
     const referer = req.headers.referer;
     if (!refererCheck(referer)) {
         return res.status(403).json({
@@ -141,6 +149,20 @@ export const requireValidProviderId = (paramName = 'id') => (req, res, next) => 
     }
     if (!STATUS_PROVIDER_IDS.has(id)) {
         return res.status(400).json({ error: 'Invalid provider id' });
+    }
+    next();
+};
+
+// Gate for the key-only v1 routes (arbitrary-IP lookup lands in Phase 2, the
+// egress probe in Phase 3). The v1 surface replaces the referer gate with
+// static keys; anonymous callers keep exactly one route (self lookup) and get
+// this 401 everywhere else.
+export const requireApiKey = (req, res, next) => {
+    if (!isValidApiKey(req.headers['x-api-key'])) {
+        return res.status(401).json({
+            error: 'API key required for arbitrary IP lookup',
+            hint: 'Anonymous callers may only use GET /api/v1/ip (self lookup)',
+        });
     }
     next();
 };

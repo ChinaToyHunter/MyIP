@@ -325,3 +325,21 @@ describe('requireValidDomain', () => {
         }
     });
 });
+
+// /api/v1 is the machine-consumed surface: the referer gate must skip it
+// (keys replace referers there), and nothing else may change behavior.
+describe('requireReferer v1 exemption', () => {
+    it('skips the check entirely for /v1 paths (mount-relative)', () => {
+        let nextCalled = false;
+        const req = { headers: {}, query: {}, path: '/v1/ip' };
+        requireReferer(req, makeRes(), () => { nextCalled = true; });
+        assert.equal(nextCalled, true);
+    });
+
+    it('still 403s non-v1 paths without a referer', () => {
+        const res = makeRes();
+        const req = { headers: {}, query: {}, path: '/ipinfo' };
+        requireReferer(req, res, () => { throw new Error('must not be called'); });
+        assert.equal(res.statusCode, 403);
+    });
+});

@@ -79,7 +79,10 @@ currently `dns-resolvers.js`, the country-annotated resolver list behind
 `common/guards.js`, attached in `backend-server.js` — handlers never repeat
 these checks:
 
-- `requireReferer` — global on `/api/*` (ALLOWED_DOMAINS + localhost).
+- `requireReferer` — global on `/api/*` (ALLOWED_DOMAINS + localhost), except
+  `/api/v1/*` which it skips (machine-consumed surface, key-gated instead).
+- `requireApiKey` — `/api/v1/*` routes beyond the anonymous self lookup;
+  validates `X-API-Key` against `UNIFIED_API_KEYS` (`common/api-keys.js`).
 - `requirePublicIP()` — per-route for `?ip=`; handler sees a well-formed,
   publicly routable IP. Reserved space (RFC 1918, loopback, CGNAT, link-local,
   documentation, …) is rejected here, so no geo source is ever asked about an

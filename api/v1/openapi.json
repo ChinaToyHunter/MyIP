@@ -1,0 +1,179 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Unified IP Information API",
+    "version": "1.0.0",
+    "description": "Fork of jason5ng32/MyIP exposing a unified, machine-consumed IP information surface. Lookup data (about an arbitrary queried IP) and egress-probe data (about the deployment's own outbound IP) are strictly separated namespaces. This document covers the endpoints implemented in the current release; planned routes land here together with their implementation, never before."
+  },
+  "servers": [{ "url": "/" }],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyHeader": { "type": "apiKey", "in": "header", "name": "X-API-Key" }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "hint": { "type": "string" }
+        }
+      },
+      "SourceError": {
+        "type": "object",
+        "required": ["source", "error", "status"],
+        "properties": {
+          "source": { "type": "string", "description": "Provider key, e.g. maxmind / ipapi_is / ipinfo / ippure" },
+          "error": { "type": "string", "description": "Machine-readable cause: api_key_missing, timeout_after_8000ms, subject_mismatch, ..." },
+          "status": { "type": "integer" }
+        }
+      },
+      "LookupResponse": {
+        "type": "object",
+        "required": ["schema_version", "query", "lookup"],
+        "properties": {
+          "schema_version": { "type": "string", "enum": ["1.0"] },
+          "query": {
+            "type": "object",
+            "required": ["ip", "mode", "timestamp", "duration_ms"],
+            "properties": {
+              "ip": { "type": "string" },
+              "mode": { "type": "string", "enum": ["lookup"] },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "duration_ms": { "type": "integer" }
+            }
+          },
+          "lookup": {
+            "type": "object",
+            "required": ["geo", "network", "quality", "errors"],
+            "properties": {
+              "geo": {
+                "type": ["object", "null"],
+                "description": "MaxMind local-DB shape; null when the database is unavailable (see errors[]).",
+                "properties": {
+                  "source": { "type": "string", "enum": ["maxmind"] },
+                  "ip": { "type": "string" },
+                  "city": { "type": "string" },
+                  "region": { "type": "string" },
+                  "country": { "type": "string" },
+                  "country_name": { "type": "string" },
+                  "country_code": { "type": "string" },
+                  "latitude": { "type": ["number", "string"] },
+                  "longitude": { "type": ["number", "string"] },
+                  "asn": { "type": "string" },
+                  "org": { "type": "string" },
+                  "timezone": { "type": "string" }
+                }
+              },
+              "network": {
+                "type": "object",
+                "properties": {
+                  "asn": { "type": "string" },
+                  "org": { "type": "string" }
+                }
+              },
+              "quality": {
+                "type": "object",
+                "description": "Per-provider blocks, keyed by provider name. Absent key = that provider failed (see errors[]).",
+                "properties": {
+                  "ipapi_is": { "$ref": "#/components/schemas/IpapiIsQuality" },
+                  "ipinfo": { "$ref": "#/components/schemas/IpinfoQuality" },
+                  "ippure": { "$ref": "#/components/schemas/IppureQuality" }
+                }
+              },
+              "errors": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/SourceError" },
+                "description": "Per-source failure list. Empty array = every source succeeded; a missing quality key always has a matching entry here."
+              }
+            }
+          }
+        }
+      },
+      "IpapiIsQuality": {
+        "type": "object",
+        "properties": {
+          "is_proxy": { "type": "boolean" },
+          "is_vpn": { "type": "boolean" },
+          "is_tor": { "type": "boolean" },
+          "is_datacenter": { "type": "boolean" },
+          "is_abuser": { "type": "boolean" },
+          "raw": { "type": "object" }
+        }
+      },
+      "IpinfoQuality": {
+        "type": "object",
+        "properties": {
+          "privacy": {
+            "type": ["object", "null"],
+            "description": "null when the deployment's ipinfo plan lacks the privacy add-on.",
+            "properties": {
+              "proxy": { "type": "boolean" },
+              "vpn": { "type": "boolean" },
+              "tor": { "type": "boolean" },
+              "relay": { "type": "boolean" },
+              "hosting": { "type": "boolean" },
+              "service": { "type": "string" }
+            }
+          },
+          "raw": { "type": "object" }
+        }
+      },
+      "IppureQuality": {
+        "type": "object",
+        "description": "Self-lookup only. IPPure answers about the direct connection peer; a subject mismatch is rejected with a 422 errors[] entry rather than served as visitor data.",
+        "properties": {
+          "fraud_score": { "type": ["integer", "null"] },
+          "is_residential": { "type": ["boolean", "null"] },
+          "is_broadcast": { "type": ["boolean", "null"] },
+          "raw": { "type": "object" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/ip": {
+      "get": {
+        "summary": "Look up the calling visitor's own IP",
+        "description": "Anonymous self lookup. The inspected address is resolved from the proxy header chain (cf-connecting-ip → x-forwarded-for → req.ip) and cannot be overridden by the caller. Results aggregate every configured provider in parallel under a shared 8s deadline; per-source failures land in lookup.errors[] without failing the request.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "default": "en" },
+            "description": "BCP-47 tag for localized MaxMind names; normalized to the GeoLite2 supported set."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregated self-lookup payload (possibly partial — check lookup.errors).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LookupResponse" } } }
+          },
+          "400": {
+            "description": "Client IP could not be determined or is not publicly routable.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "429": {
+            "description": "Rate limit exceeded (anonymous tier).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "Every lookup source failed for this request.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "security": [],
+        "responses": {
+          "200": { "description": "The OpenAPI contract of the /api/v1 surface." }
+        }
+      }
+    }
+  }
+}

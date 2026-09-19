@@ -10,6 +10,8 @@ import logger from './common/logger.js';
 import { requireReferer, requirePublicIP, requireValidPrefix, requireValidASN, requireValidDomain, requireValidProviderId,
     requireValidRecordType, requireValidReportId } from './common/guards.js';
 import { withTimeZone } from './common/ip-timezone.js';
+import { getClientIp } from './common/client-ip.js';
+import { isValidApiKey } from './common/api-keys.js';
 
 // Backend APIs
 import mapHandler from './api/google-map.js';
@@ -44,6 +46,9 @@ import personaEvaluateHandler from './api/persona.js';
 import validateConfigs from './api/configs.js';
 import getUserinfo from './api/get-user-info.js';
 import updateUserAchievement from './api/update-user-achievement.js';
+// Unified v1 API
+import selfIpHandler from './api/v1/self-ip.js';
+import openApiV1Handler from './api/v1/openapi.js';
 import { reloadMaxMindDatabases, startMaxMindFileWatcher } from './common/maxmind-service.js';
 import { startMaxMindAutoUpdate, bootstrapMaxMindIfMissing } from './common/maxmind-updater.js';
 import { startCaidaAutoUpdate, bootstrapCaidaIfMissing } from './common/caida-updater.js';
@@ -85,13 +90,6 @@ if (process.env.LOG_HTTP === 'true') {
         },
     }));
     logger.info('📝 HTTP request logging enabled (LOG_HTTP=true)');
-}
-
-function getClientIp(req) {
-    const cfIp = req.headers['cf-connecting-ip'];
-    const forwardedIps = req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0] : null;
-    const cfIpV6 = req.headers['cf-connecting-ipv6'];
-    return cfIp || forwardedIps || cfIpV6 || req.ip;
 }
 
 // Host-local time with an explicit UTC offset ("2026-07-14 10:23:45 +0800"),
@@ -245,6 +243,25 @@ const ONE_DAY_CACHE = 24 * 60 * 60;
 const SEVEN_DAYS_CACHE = 7 * 24 * 60 * 60;
 const THIRTY_DAYS_CACHE = 30 * 24 * 60 * 60;
 const ONE_YEAR_CACHE = 365 * 24 * 60 * 60;
+
+// --- Unified IP API v1 (fork addition; contract: api/v1/openapi.json) ---
+// Machine-consumed surface: the referer gate skips /v1 (see guards.js), a
+// dedicated per-minute limiter replaces the shared 20-min one, and responses
+// stay no-store (per-visitor answers must never hit an edge cache).
+const v1AnonLimitPerMin = parseInt(process.env.V1_ANON_RATE_LIMIT_PER_MIN || '60', 10);
+const v1KeyLimitPerMin = parseInt(process.env.V1_KEY_RATE_LIMIT_PER_MIN || '300', 10);
+const v1Limiter = rateLimit({
+    windowMs: 60 * 1000,
+    // Buckets stay per-IP (default keyGenerator keeps the built-in IPv6
+    // handling); the limit itself jumps when the request carries a valid key,
+    // so a NATted key user shares the bucket with anon traffic but at the
+    // key tier. Per-key buckets are a post-MVP refinement.
+    max: (req) => (isValidApiKey(req.headers['x-api-key']) ? v1KeyLimitPerMin : v1AnonLimitPerMin),
+    message: { error: 'Too Many Requests' },
+});
+app.use('/api/v1', v1Limiter);
+app.get('/api/v1/ip', selfIpHandler);
+app.get('/api/v1/openapi.json', cacheable(ONE_HOUR_CACHE), openApiV1Handler);
 
 // Cacheable routes — TTLs picked against each upstream's natural refresh cadence.
 // Short Cache
