@@ -679,7 +679,7 @@ describe('v1 lookup-ip handler', () => {
         const ipqsErr = res.body.errors.find((e) => e.source === 'ipqs');
         assert.equal(ipqsErr.error, 'upstream_error: Quota exceeded');
         assert.equal(ipqsErr.status, 500);
-        assert.equal(res.body.quality, undefined, 'a failed provider must not ship a block');
+        assert.equal(res.body.lookup, undefined, 'a failed provider must not ship a block');
     });
 
     it('fails closed when ipqs answers 200 without a success flag', async () => {
@@ -700,7 +700,7 @@ describe('v1 lookup-ip handler', () => {
         assert.equal(res.statusCode, 503);
         const ipqsErr = res.body.errors.find((e) => e.source === 'ipqs');
         assert.equal(ipqsErr.error, 'upstream_error: success flag absent');
-        assert.equal(res.body.quality, undefined, 'a malformed body must not ship a clean verdict');
+        assert.equal(res.body.lookup, undefined, 'a malformed body must not ship a clean verdict');
     });
 });
 
