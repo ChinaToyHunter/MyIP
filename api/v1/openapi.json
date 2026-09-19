@@ -225,6 +225,55 @@
             "description": "The asn object as upstream nests it, plus blocklists when upstream supplies any — a free key reports both."
           }
         }
+      },
+      "EgressProbe": {
+        "type": "object",
+        "required": ["Head", "Info", "ip", "stale", "last_run"],
+        "description": "The IPQuality report for this deployment's egress, passed through as the pinned upstream revision produced it, plus the three fields this API adds beside it (ip / stale / last_run). Only the address is rewritten — masked by default, full on a key-authorized ?raw=true read. The upstream sections are their own shape and are not re-specified here: pinning them would make a change to this document mandatory on every upstream revision that adds a field, so consumers should read unknown keys as forward-compatible additions.",
+        "properties": {
+          "ip": { "type": ["string", "null"], "description": "The egress address, masked to the top 16 bits by default ('203.0.*.*'), the full value on an authorized ?raw=true read, and '*' when it could not be classified. Always equal to Head.IP — the same decision is applied to both." },
+          "stale": { "type": "boolean", "description": "True when the cached report had outlived its TTL and a refresh is running behind this response. The payload is still a real past run, just not a current one." },
+          "last_run": { "type": ["string", "null"], "format": "date-time", "description": "When the report being served was produced." },
+          "Head": {
+            "type": "object",
+            "description": "Run metadata. IP is the only field this API modifies; Version identifies the upstream revision that produced the report.",
+            "properties": {
+              "IP": { "type": "string", "description": "Masked, raw or '*' exactly as the sibling ip field describes." },
+              "Version": { "type": "string" },
+              "Time": { "type": "string" }
+            }
+          },
+          "Info": { "type": ["object", "null"], "description": "ASN, organization and country of the egress address. Head and Info are the two sections a run always carries — the sidecar refuses a report without them — so a null here means the field was absent upstream, not that the section failed." },
+          "Type": { "type": ["object", "null"], "description": "Usage classification — datacenter / residential / mobile / proxy scores by source." },
+          "Score": { "type": ["object", "null"], "description": "Per-source risk scores, keyed by the source that produced them. null when the run produced no score section at all — an absent measurement, not a clean address." },
+          "Factor": { "type": ["object", "null"], "description": "The individual signals behind the usage verdict (proxy, tor, VPN, country, ...)." },
+          "Media": { "type": ["object", "null"], "description": "Streaming-service reachability, one entry per service." },
+          "Mail": { "type": ["object", "null"], "description": "Port 25 reachability, DNS blacklist tallies (424 zones), and the SMTP banner." }
+        }
+      },
+      "ProbeResponse": {
+        "type": "object",
+        "required": ["schema_version", "query", "probe"],
+        "properties": {
+          "schema_version": { "type": "string", "enum": ["1.0"] },
+          "query": {
+            "type": "object",
+            "required": ["ip", "mode", "timestamp", "duration_ms"],
+            "properties": {
+              "ip": { "type": "null", "description": "Always null: a probe answers about the deployment, not about an address a caller asked for. The egress address lives in probe.egress only, so the two can never be mistaken for each other." },
+              "mode": { "type": "string", "enum": ["egress-probe"] },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "duration_ms": { "type": "integer", "description": "Time spent serving this request, not the length of the probe run behind it." }
+            }
+          },
+          "probe": {
+            "type": "object",
+            "required": ["egress"],
+            "properties": {
+              "egress": { "$ref": "#/components/schemas/EgressProbe" }
+            }
+          }
+        }
       }
     }
   },
@@ -341,6 +390,44 @@
           },
           "503": {
             "description": "Every quality source failed for this request.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/probe/egress": {
+      "get": {
+        "summary": "Probe this deployment's own outbound IP",
+        "description": "Runs IPQuality against the address this deployment egresses from, or serves the last run from cache. Answers about the server, never about the caller — the response rides under probe.egress.* precisely so it cannot be read as a lookup result. The address is masked to its top 16 bits unless ?raw=true is passed, which this route only accepts from a caller that already presented a valid key. A probe takes 30-90 seconds and contacts several hundred third-party endpoints, so results are cached (default 10 minutes) and the route carries an additional hourly cap on top of the per-minute limiter; a cached read past its TTL is served immediately with stale: true while a refresh runs behind it.",
+        "security": [{ "ApiKeyHeader": [] }],
+        "parameters": [
+          {
+            "name": "raw",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "boolean", "default": false },
+            "description": "Serve the egress address in full instead of masked. Only the exact string 'true' enables it."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The egress report. Check probe.egress.stale to tell a fresh run from a cached one.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeResponse" } } }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "429": {
+            "description": "Rate limit exceeded — the per-minute key tier, or the hourly probe cap.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "502": {
+            "description": "The sidecar was reached but the run failed. error names which way (probe_timeout / probe_no_json / probe_failed_to_start), and detail carries the tail of the probe's own output.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "No sidecar is configured for this deployment (IPQUALITY_SIDECAR_URL unset).",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
           }
         }

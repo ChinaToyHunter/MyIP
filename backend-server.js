@@ -52,6 +52,7 @@ import updateUserAchievement from './api/update-user-achievement.js';
 import selfIpHandler from './api/v1/self-ip.js';
 import lookupIpHandler from './api/v1/lookup-ip.js';
 import qualityIpHandler from './api/v1/quality-ip.js';
+import probeEgressHandler from './api/v1/probe-egress.js';
 import openApiV1Handler from './api/v1/openapi.js';
 import { reloadMaxMindDatabases, startMaxMindFileWatcher } from './common/maxmind-service.js';
 import { startMaxMindAutoUpdate, bootstrapMaxMindIfMissing } from './common/maxmind-updater.js';
@@ -277,6 +278,21 @@ app.get('/api/v1/ip/:ip', requireApiKey, requirePublicIPParam(), lookupIpHandler
 // consumers that only need the provider verdicts get a smaller payload and
 // never touch the MaxMind data (or its attribution requirement).
 app.get('/api/v1/quality/:ip', requireApiKey, requirePublicIPParam(), qualityIpHandler);
+// The egress probe gets its own hourly cap on top of the per-minute one: one
+// run contacts hundreds of third-party endpoints over 30-90s, so it is the one
+// v1 route where a caller can spend real money and real reputation per request.
+// The cap counts requests rather than runs — a caller cannot tell a cached read
+// from a fresh one, so limiting only the runs would look like a limit that
+// strikes at random.
+const v1ProbeLimitPerHour = parseInt(process.env.V1_PROBE_RATE_LIMIT_PER_HOUR || '6', 10);
+const v1ProbeLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    // Per-IP like the minute limiter above, for the same reason: a key-tier
+    // bucket would let one leaked key exhaust the whole deployment's budget.
+    max: v1ProbeLimitPerHour,
+    message: { error: 'Too Many Requests' },
+});
+app.get('/api/v1/probe/egress', v1ProbeLimiter, requireApiKey, probeEgressHandler);
 app.get('/api/v1/openapi.json', cacheable(ONE_HOUR_CACHE), openApiV1Handler);
 
 // Cacheable routes — TTLs picked against each upstream's natural refresh cadence.
