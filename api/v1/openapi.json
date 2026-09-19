@@ -91,7 +91,9 @@
           "ippure": { "$ref": "#/components/schemas/IppureQuality" },
           "abuseipdb": { "$ref": "#/components/schemas/AbuseIpdbQuality" },
           "ipqs": { "$ref": "#/components/schemas/IpqsQuality" },
-          "ipgeolocation": { "$ref": "#/components/schemas/IpgeolocationQuality" }
+          "ipgeolocation": { "$ref": "#/components/schemas/IpgeolocationQuality" },
+          "ip2location": { "$ref": "#/components/schemas/Ip2locationQuality" },
+          "ipdata": { "$ref": "#/components/schemas/IpdataQuality" }
         }
       },
       "QualityResponse": {
@@ -192,6 +194,36 @@
           "is_relay": { "type": ["boolean", "null"] },
           "is_cloud_provider": { "type": ["boolean", "null"] },
           "raw": { "type": "object" }
+        }
+      },
+      "Ip2locationQuality": {
+        "type": "object",
+        "description": "Proxy verdict plus ASN / usage context from ip2location.io (IP2LOCATION_API_KEY — the same key the legacy /api/ip2location route reads). is_proxy is null when the plan withholds it, never false — an unanswered question is not a clean address.",
+        "properties": {
+          "is_proxy": { "type": ["boolean", "null"], "description": "null when the free tier does not answer the question — not a clean address." },
+          "raw": {
+            "type": "object",
+            "description": "asn as upstream sends it — a bare string here, unlike ipdata's nested object — plus org / usage_type / address_type when present."
+          }
+        }
+      },
+      "IpdataQuality": {
+        "type": "object",
+        "description": "Threat verdicts from ipdata.co (IPDATA_API_KEY). Every field is null when the response carries no threat block — an unanswered question, not a clean address.",
+        "properties": {
+          "is_tor": { "type": ["boolean", "null"] },
+          "is_proxy": { "type": ["boolean", "null"] },
+          "is_datacenter": { "type": ["boolean", "null"] },
+          "is_anonymous": { "type": ["boolean", "null"] },
+          "is_icloud_relay": { "type": ["boolean", "null"] },
+          "is_known_attacker": { "type": ["boolean", "null"] },
+          "is_known_abuser": { "type": ["boolean", "null"] },
+          "is_threat": { "type": ["boolean", "null"] },
+          "is_bogon": { "type": ["boolean", "null"] },
+          "raw": {
+            "type": "object",
+            "description": "The asn object as upstream nests it, plus blocklists when upstream supplies any — a free key reports both."
+          }
         }
       }
     }

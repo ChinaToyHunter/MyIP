@@ -24,10 +24,15 @@
 // egress behind a reverse proxy, and ipgeolocation's threat block needs a paid
 // plan. Presence of a key is not enough for those — the operator has to say so.
 //
-// The remaining key-driven sources (ipapi.is / ipinfo / abuseipdb / ipqs)
-// serve both routes. On the anonymous self route they spend the deployment's
-// paid quota on every visitor, so watch the upstream limits when turning their
-// keys on.
+// The remaining key-driven sources (ipapi.is / ipinfo / abuseipdb / ipqs /
+// ip2location / ipdata) serve both routes — each is parameterized by the
+// address under inspection, so neither route asks one about a subject it
+// cannot answer for. Both sets are written out in full rather than sharing a
+// core list: a source that is safe for one route and not the other has to be a
+// deliberate edit in two places, not a silent inheritance.
+//
+// On the anonymous self route these spend the deployment's paid quota on every
+// visitor, so watch the upstream limits before switching many of them on.
 
 import { ipapiIsProvider } from './ipapi-is.js';
 import { ipinfoProvider } from './ipinfo.js';
@@ -35,6 +40,8 @@ import { ippureProvider } from './ippure.js';
 import { abuseIpdbProvider } from './abuseipdb.js';
 import { ipqsProvider } from './ipqs.js';
 import { ipgeolocationProvider } from './ipgeolocation.js';
+import { ip2locationProvider } from './ip2location.js';
+import { ipdataProvider } from './ipdata.js';
 
 const OPT_IN_ENV = {
     ippure: 'V1_IPPURE_ENABLED',
@@ -49,6 +56,8 @@ export const getSelfProviders = () => {
         ipinfoProvider,
         abuseIpdbProvider,
         ipqsProvider,
+        ip2locationProvider,
+        ipdataProvider,
     ];
     if (optedIn('ippure')) providers.push(ippureProvider);
     if (optedIn('ipgeolocation')) providers.push(ipgeolocationProvider);
@@ -60,4 +69,6 @@ export const getArbitraryProviders = () => [
     ipinfoProvider,
     abuseIpdbProvider,
     ipqsProvider,
+    ip2locationProvider,
+    ipdataProvider,
 ];

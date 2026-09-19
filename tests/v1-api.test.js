@@ -58,6 +58,8 @@ const clearProviderKeys = () => {
     delete process.env.IPINFO_API_TOKEN;
     delete process.env.ABUSEIPDB_API_KEY;
     delete process.env.IPQS_API_KEY;
+    delete process.env.IP2LOCATION_API_KEY;
+    delete process.env.IPDATA_API_KEY;
     delete process.env.IPGEOLOCATION_API_KEY;
     delete process.env.V1_IPPURE_ENABLED;
     delete process.env.V1_IPGEOLOCATION_ENABLED;
@@ -110,6 +112,25 @@ const allSourcesUpstream = () => async (url) => {
     }
     if (u.includes('ipinfo.io')) {
         return okJson({ org: 'AS15169 Google LLC' });
+    }
+    // asn stays a bare string here, ipdata nests it — each source's own shape,
+    // which is exactly what the raw blocks are there to preserve. The free-tier
+    // field set: usage_type / address_type are plan-gated upstream and do not
+    // appear here at all.
+    if (u.includes('api.ip2location.io')) {
+        return okJson({ is_proxy: false, asn: '15169', as: 'Google LLC' });
+    }
+    if (u.includes('api.ipdata.co')) {
+        return okJson({
+            asn: { asn: 'AS15169', name: 'Google LLC', domain: 'about.google', route: '8.8.8.0/24', type: 'hosting' },
+            threat: {
+                is_tor: false, is_proxy: true, is_datacenter: true, is_anonymous: false,
+                is_icloud_relay: false, is_known_attacker: false, is_known_abuser: false,
+                is_threat: false, is_bogon: false,
+                // Present on a free key too, and carried through to raw.
+                blocklists: [{ name: 'myip.ms', site: 'https://myip.ms', type: 'bots' }],
+            },
+        });
     }
     throw new Error('unexpected upstream: ' + u);
 };
@@ -231,7 +252,8 @@ describe('legacy API limit policies', () => {
 const ENV_KEYS = [
     'UNIFIED_API_KEYS', 'UNIFIED_LOOKUP_DEADLINE_MS',
     'IPAPIIS_API_KEY', 'IPINFO_API_KEY', 'IPINFO_API_TOKEN',
-    'ABUSEIPDB_API_KEY', 'IPQS_API_KEY', 'IPGEOLOCATION_API_KEY',
+    'ABUSEIPDB_API_KEY', 'IPQS_API_KEY', 'IP2LOCATION_API_KEY', 'IPDATA_API_KEY',
+    'IPGEOLOCATION_API_KEY',
     'V1_IPPURE_ENABLED', 'V1_IPGEOLOCATION_ENABLED',
 ];
 let savedEnv = {};
@@ -342,7 +364,7 @@ describe('v1 self-ip handler', () => {
         assert.equal(urls.some((u) => u.includes('ippure.com')), false);
         assert.equal(urls.some((u) => u.includes('api.ipgeolocation.io')), false);
         const sources = res.body.lookup.errors.map((e) => e.source).sort();
-        assert.deepEqual(sources, ['abuseipdb', 'ipqs', 'maxmind']);
+        assert.deepEqual(sources, ['abuseipdb', 'ip2location', 'ipdata', 'ipqs', 'maxmind']);
     });
 
     it('503s when every source is unavailable', async () => {
@@ -352,11 +374,11 @@ describe('v1 self-ip handler', () => {
         await selfIpHandler(makeReq(), res);
         assert.equal(res.statusCode, 503);
         assert.equal(res.body.error, 'All lookup sources failed');
-        // The default self set: maxmind, the three keyed sources, tokenless
+        // The default self set: maxmind, the five keyed sources, tokenless
         // ipinfo. ippure and ipgeolocation are opt-in and stay out.
         const sources = res.body.errors.map((e) => e.source).sort();
         assert.deepEqual(sources, [
-            'abuseipdb', 'ipapi_is', 'ipinfo', 'ipqs', 'maxmind',
+            'abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipinfo', 'ipqs', 'maxmind',
         ]);
     });
 
@@ -369,7 +391,8 @@ describe('v1 self-ip handler', () => {
         assert.equal(res.statusCode, 503);
         const sources = res.body.errors.map((e) => e.source).sort();
         assert.deepEqual(sources, [
-            'abuseipdb', 'ipapi_is', 'ipgeolocation', 'ipinfo', 'ippure', 'ipqs', 'maxmind',
+            'abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipgeolocation', 'ipinfo',
+            'ippure', 'ipqs', 'maxmind',
         ]);
     });
 
@@ -378,6 +401,8 @@ describe('v1 self-ip handler', () => {
         process.env.IPINFO_API_KEY = 'test-key-ipinfo';
         process.env.ABUSEIPDB_API_KEY = 'test-key-abuseipdb';
         process.env.IPQS_API_KEY = 'test-key-ipqs';
+        process.env.IP2LOCATION_API_KEY = 'test-key-ip2location';
+        process.env.IPDATA_API_KEY = 'test-key-ipdata';
         process.env.IPGEOLOCATION_API_KEY = 'test-key-ipgeo';
         enableSelfOnlySources();
         const upstream = allSourcesUpstream();
@@ -403,9 +428,31 @@ describe('v1 self-ip handler', () => {
             is_broadcast: false,
             raw: { postalCode: '100000' },
         });
+        // asn stays the bare string upstream sent, in raw only — the two new
+        // sources disagree on its shape, and flattening either would make the
+        // other look like the wrong one.
+        assert.deepEqual(res.body.lookup.quality.ip2location, {
+            is_proxy: false,
+            raw: { asn: '15169', org: 'Google LLC' },
+        });
+        assert.deepEqual(res.body.lookup.quality.ipdata, {
+            is_tor: false,
+            is_proxy: true,
+            is_datacenter: true,
+            is_anonymous: false,
+            is_icloud_relay: false,
+            is_known_attacker: false,
+            is_known_abuser: false,
+            is_threat: false,
+            is_bogon: false,
+            raw: {
+                asn: { asn: 'AS15169', name: 'Google LLC', domain: 'about.google', route: '8.8.8.0/24', type: 'hosting' },
+                blocklists: [{ name: 'myip.ms', site: 'https://myip.ms', type: 'bots' }],
+            },
+        });
         assert.deepEqual(
             Object.keys(res.body.lookup.quality).sort(),
-            ['abuseipdb', 'ipapi_is', 'ipgeolocation', 'ipinfo', 'ippure', 'ipqs'],
+            ['abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipgeolocation', 'ipinfo', 'ippure', 'ipqs'],
         );
         // maxmind is the only failure in this environment
         assert.deepEqual(res.body.lookup.errors.map((e) => e.source), ['maxmind']);
@@ -597,6 +644,8 @@ describe('v1 lookup-ip handler', () => {
         process.env.IPINFO_API_KEY = 'test-key-ipinfo';
         process.env.ABUSEIPDB_API_KEY = 'test-key-abuseipdb';
         process.env.IPQS_API_KEY = 'test-key-ipqs';
+        process.env.IP2LOCATION_API_KEY = 'test-key-ip2location';
+        process.env.IPDATA_API_KEY = 'test-key-ipdata';
         // Set but unusable on this route: the flag is what would enable it, and
         // even then it is self-route-only.
         process.env.IPGEOLOCATION_API_KEY = 'test-key-ipgeo';
@@ -613,7 +662,7 @@ describe('v1 lookup-ip handler', () => {
         assert.equal(res.body.query.mode, 'lookup');
         assert.deepEqual(
             Object.keys(res.body.lookup.quality).sort(),
-            ['abuseipdb', 'ipapi_is', 'ipinfo', 'ipqs'],
+            ['abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipinfo', 'ipqs'],
         );
         assert.equal(res.body.lookup.quality.abuseipdb.score, 42);
         assert.equal(res.body.lookup.quality.ipqs.fraud_score, 88);
@@ -651,7 +700,7 @@ describe('v1 lookup-ip handler', () => {
 
         assert.equal(res.statusCode, 503);
         const bySource = Object.fromEntries(res.body.errors.map((e) => [e.source, e]));
-        for (const source of ['abuseipdb', 'ipqs', 'ipapi_is']) {
+        for (const source of ['abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipqs']) {
             assert.equal(bySource[source].error, 'api_key_missing', source);
             assert.equal(bySource[source].status, 503, source);
         }
@@ -702,6 +751,68 @@ describe('v1 lookup-ip handler', () => {
         assert.equal(ipqsErr.error, 'upstream_error: success flag absent');
         assert.equal(res.body.lookup, undefined, 'a malformed body must not ship a clean verdict');
     });
+
+    it('refuses a 2xx error envelope from ip2location instead of reading it as data', async () => {
+        clearProviderKeys();
+        process.env.IP2LOCATION_API_KEY = 'test-key-ip2location';
+        globalThis.fetch = async (url) => {
+            if (String(url).includes('api.ip2location.io')) {
+                // The observed failure modes are 4xx (401 bad key, 400 bad
+                // address) and the status check refuses those. This is the
+                // remaining hole — an error envelope still carrying a 2xx.
+                // Read as data it would ship a block whose single verdict is a
+                // null, indistinguishable from "the plan withheld it".
+                return okJson({ error: { error_code: 401, error_message: 'Invalid API key.' } });
+            }
+            throw new Error('unexpected upstream: ' + url);
+        };
+
+        const res = makeRes();
+        await lookupIpHandler(makeParamReq('8.8.8.8'), res);
+
+        assert.equal(res.statusCode, 503);
+        const err = res.body.errors.find((e) => e.source === 'ip2location');
+        assert.equal(err.error, 'upstream_error: Invalid API key.');
+        assert.equal(err.status, 500);
+        assert.equal(res.body.quality, undefined, 'a failed provider must not ship a block');
+    });
+
+    it('reports a withheld quality field as null, never as a clean verdict', async () => {
+        clearProviderKeys();
+        process.env.IP2LOCATION_API_KEY = 'test-key-ip2location';
+        process.env.IPDATA_API_KEY = 'test-key-ipdata';
+        globalThis.fetch = async (url) => {
+            const u = String(url);
+            // Short of their verdict fields on purpose: ip2location withheld
+            // is_proxy, ipdata withheld the whole threat block. Neither plan
+            // answered the question, and `false` would claim it did.
+            if (u.includes('api.ip2location.io')) {
+                return okJson({ asn: '15169' });
+            }
+            if (u.includes('api.ipdata.co')) {
+                return okJson({ asn: { asn: 'AS15169', name: 'Google LLC', type: 'hosting' } });
+            }
+            throw new Error('unexpected upstream: ' + u);
+        };
+
+        const res = makeRes();
+        await lookupIpHandler(makeParamReq('8.8.8.8'), res);
+
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(res.body.lookup.quality.ip2location, { is_proxy: null, raw: { asn: '15169' } });
+        assert.deepEqual(res.body.lookup.quality.ipdata, {
+            is_tor: null,
+            is_proxy: null,
+            is_datacenter: null,
+            is_anonymous: null,
+            is_icloud_relay: null,
+            is_known_attacker: null,
+            is_known_abuser: null,
+            is_threat: null,
+            is_bogon: null,
+            raw: { asn: { asn: 'AS15169', name: 'Google LLC', type: 'hosting' } },
+        });
+    });
 });
 
 // -- quality-only handler ------------------------------------------------------
@@ -712,6 +823,8 @@ describe('v1 quality-ip handler', () => {
         process.env.IPINFO_API_KEY = 'test-key-ipinfo';
         process.env.ABUSEIPDB_API_KEY = 'test-key-abuseipdb';
         process.env.IPQS_API_KEY = 'test-key-ipqs';
+        process.env.IP2LOCATION_API_KEY = 'test-key-ip2location';
+        process.env.IPDATA_API_KEY = 'test-key-ipdata';
         process.env.IPGEOLOCATION_API_KEY = 'test-key-ipgeo';
         enableSelfOnlySources();
         const urls = [];
@@ -727,7 +840,7 @@ describe('v1 quality-ip handler', () => {
         assert.equal(res.body.query.mode, 'quality');
         assert.deepEqual(
             Object.keys(res.body.quality).sort(),
-            ['abuseipdb', 'ipapi_is', 'ipinfo', 'ipqs'],
+            ['abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipinfo', 'ipqs'],
         );
         assert.equal(res.body.quality.ipqs.fraud_score, 88);
         // No geo block at all — not even a null one, so a consumer can tell the
@@ -751,7 +864,7 @@ describe('v1 quality-ip handler', () => {
         assert.equal(res.body.error, 'All lookup sources failed');
         assert.equal(res.body.query.mode, 'quality');
         const bySource = Object.fromEntries(res.body.errors.map((e) => [e.source, e]));
-        for (const source of ['abuseipdb', 'ipqs', 'ipapi_is']) {
+        for (const source of ['abuseipdb', 'ip2location', 'ipapi_is', 'ipdata', 'ipqs']) {
             assert.equal(bySource[source].error, 'api_key_missing', source);
         }
         // ipinfo is tokenless-capable, so it reaches the network and fails there
@@ -783,7 +896,7 @@ describe('v1 quality-ip handler', () => {
         assert.equal(res.statusCode, 200);
         assert.deepEqual(Object.keys(res.body.quality).sort(), ['ipinfo', 'ipqs']);
         const sources = res.body.errors.map((e) => e.source).sort();
-        assert.deepEqual(sources, ['abuseipdb', 'ipapi_is']);
+        assert.deepEqual(sources, ['abuseipdb', 'ip2location', 'ipapi_is', 'ipdata']);
     });
 });
 
