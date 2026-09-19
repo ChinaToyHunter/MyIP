@@ -7,6 +7,7 @@ import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { PREFS_STORAGE_KEY } from './frontend/data/default-preferences.js';
 import { LOCALE_CODES } from './common/locale-registry.js';
 import { stripPack } from './common/locale-pack.js';
+import { setCanonicalForwardedFor } from './common/proxy-headers.js';
 
 dotenv.config();
 
@@ -265,7 +266,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: frontEndPort,
     proxy: {
-      '/api': `http://localhost:${backEndPort}`
+      '/api': {
+        target: `http://localhost:${backEndPort}`,
+        configure: (proxy) => {
+          proxy.on('proxyReq', setCanonicalForwardedFor);
+        },
+      },
     },
     allowedHosts: ['dev.ipcheck.ing', 'test.ipcheck.ing'],
   }

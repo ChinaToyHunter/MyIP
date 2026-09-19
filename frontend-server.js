@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import logger from './common/logger.js';
+import { setCanonicalForwardedFor } from './common/proxy-headers.js';
 
 dotenv.config({ quiet: true });
 
@@ -15,10 +16,14 @@ const frontEndPort = parseInt(process.env.FRONTEND_PORT || 18966, 10);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// API Proxy to backend server
-frontendApp.use('/api', createProxyMiddleware({ 
+// API proxy. Replace, rather than append to, X-Forwarded-For so callers cannot
+// seed the trusted chain. The backend trusts this loopback hop by default.
+frontendApp.use('/api', createProxyMiddleware({
   target: `http://localhost:${backEndPort}/api`,
-  changeOrigin: true
+  changeOrigin: true,
+  on: {
+    proxyReq: setCanonicalForwardedFor,
+  },
 }));
 
 // Set static file directory.

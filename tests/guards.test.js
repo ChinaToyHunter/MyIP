@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { requireReferer, requirePublicIP, requireValidPrefix, requireValidDomain, requireValidProviderId, requireValidRecordType, requireValidReportId, requireValidCountry } from '../common/guards.js';
+import { requireReferer, requirePublicIP, requirePublicIPParam, requireValidPrefix, requireValidDomain, requireValidProviderId, requireValidRecordType, requireValidReportId, requireValidCountry } from '../common/guards.js';
 
 // Minimal (req, res, next) stubs — just enough to observe what the
 // middleware does.
@@ -109,6 +109,40 @@ describe('requirePublicIP', () => {
         let nextCalled = false;
         custom(makeReq({ query: { target: '8.8.8.8' } }), makeRes(), () => { nextCalled = true; });
         assert.equal(nextCalled, true);
+    });
+});
+
+describe('requirePublicIPParam', () => {
+    const guard = requirePublicIPParam();
+    const withParam = (ip) => ({ headers: {}, query: {}, params: ip === undefined ? {} : { ip } });
+
+    it('calls next() for a public address in the route param', () => {
+        let nextCalled = false;
+        guard(withParam('8.8.8.8'), makeRes(), () => { nextCalled = true; });
+        assert.equal(nextCalled, true);
+    });
+
+    it('answers like the query variant on every failure mode', () => {
+        const cases = [
+            [withParam(undefined), 'No IP address provided'],
+            [withParam('nope'), 'Invalid IP address'],
+            [withParam('192.168.1.1'), 'Not a public IP address'],
+            [withParam('2001:db8::1'), 'Not a public IP address'],
+        ];
+        for (const [req, expected] of cases) {
+            const res = makeRes();
+            let nextCalled = false;
+            guard(req, res, () => { nextCalled = true; });
+            assert.equal(res.statusCode, 400, expected);
+            assert.equal(res.body.error, expected);
+            assert.equal(nextCalled, false);
+        }
+    });
+
+    it('tolerates a stub without a params object', () => {
+        const res = makeRes();
+        guard({ headers: {}, query: {} }, res, () => { throw new Error('must not be called'); });
+        assert.equal(res.statusCode, 400);
     });
 });
 
@@ -329,11 +363,13 @@ describe('requireValidDomain', () => {
 // /api/v1 is the machine-consumed surface: the referer gate must skip it
 // (keys replace referers there), and nothing else may change behavior.
 describe('requireReferer v1 exemption', () => {
-    it('skips the check entirely for /v1 paths (mount-relative)', () => {
-        let nextCalled = false;
-        const req = { headers: {}, query: {}, path: '/v1/ip' };
-        requireReferer(req, makeRes(), () => { nextCalled = true; });
-        assert.equal(nextCalled, true);
+    it('skips the check entirely for the /v1 root and descendants (mount-relative)', () => {
+        for (const path of ['/v1', '/v1/ip']) {
+            let nextCalled = false;
+            const req = { headers: {}, query: {}, path };
+            requireReferer(req, makeRes(), () => { nextCalled = true; });
+            assert.equal(nextCalled, true, path);
+        }
     });
 
     it('still 403s non-v1 paths without a referer', () => {

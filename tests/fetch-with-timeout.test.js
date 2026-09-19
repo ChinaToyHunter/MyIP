@@ -50,7 +50,11 @@ describe('fetchWithTimeout()', () => {
 
         await assert.rejects(
             () => fetchWithTimeout('https://example.test', { timeoutMs: 20 }),
-            (err) => err.name === 'AbortError',
+            (err) => (
+                err.name === 'AbortError'
+                && err.abortSource === 'timeout'
+                && err.timeoutMs === 20
+            ),
         );
         assert.equal(sawAbort, true, 'fetch received the abort signal from the timeout');
     });
@@ -91,7 +95,11 @@ describe('fetchWithTimeout()', () => {
 
         await assert.rejects(
             () => fetchWithTimeout('https://example.test', { signal: outer.signal, timeoutMs: 1000 }),
-            (err) => err.name === 'AbortError',
+            (err) => (
+                err.name === 'AbortError'
+                && err.abortSource === 'caller'
+                && err.timeoutMs === null
+            ),
         );
         assert.equal(receivedAbort, true, 'internal signal inherited the pre-aborted state');
     });
@@ -114,7 +122,11 @@ describe('fetchWithTimeout()', () => {
 
         queueMicrotask(() => outer.abort());
 
-        await assert.rejects(p, (err) => err.name === 'AbortError');
+        await assert.rejects(p, (err) => (
+            err.name === 'AbortError'
+            && err.abortSource === 'caller'
+            && err.timeoutMs === null
+        ));
         assert.equal(sawAbort, true);
     });
 

@@ -10,6 +10,7 @@ import { isValidApiKey } from './api-keys.js';
 import { isValidBgpPrefix } from './bgp-prefix.js';
 import { STATUS_PROVIDER_IDS } from './service-status-providers.js';
 import { DNS_RECORD_TYPE_SET } from './dns-record-types.js';
+import { isV1ApiPath } from './api-paths.js';
 
 // Reject requests without an allowed referer. The error message variant
 // preserves the existing user-facing wording.
@@ -18,7 +19,7 @@ export const requireReferer = (req, res, next) => {
     // and gated by API keys instead of the referer allow-list — there is no
     // Referer to check. req.path here is relative to the '/api' mount (and can
     // be absent on bare req stubs, so don't assume it exists).
-    if (req.path?.startsWith('/v1/')) {
+    if (isV1ApiPath(req.path)) {
         return next();
     }
     const referer = req.headers.referer;
@@ -30,6 +31,26 @@ export const requireReferer = (req, res, next) => {
     next();
 };
 
+// Shared by the ?ip= and :ip guard variants: same three-way failure split
+// (missing / malformed / reserved) so every route inspecting a caller-supplied
+// address answers identically. Writes the response and returns false when the
+// address is unusable.
+const acceptPublicIP = (ip, res) => {
+    if (!ip) {
+        res.status(400).json({ error: 'No IP address provided' });
+        return false;
+    }
+    if (!isValidIP(ip)) {
+        res.status(400).json({ error: 'Invalid IP address' });
+        return false;
+    }
+    if (!isUsablePublicIP(ip)) {
+        res.status(400).json({ error: 'Not a public IP address' });
+        return false;
+    }
+    return true;
+};
+
 // Reject requests whose IP query param isn't a publicly routable address.
 // Every `?ip=` route asks an external service about that address — a
 // registry, a geolocation source — and reserved space has no answer there,
@@ -38,15 +59,18 @@ export const requireReferer = (req, res, next) => {
 // Factory so a route using another param name (none today, but leaving the
 // door open) can say `requirePublicIP('target')`.
 export const requirePublicIP = (paramName = 'ip') => (req, res, next) => {
-    const ip = req.query[paramName];
-    if (!ip) {
-        return res.status(400).json({ error: 'No IP address provided' });
+    if (!acceptPublicIP(req.query[paramName], res)) {
+        return;
     }
-    if (!isValidIP(ip)) {
-        return res.status(400).json({ error: 'Invalid IP address' });
-    }
-    if (!isUsablePublicIP(ip)) {
-        return res.status(400).json({ error: 'Not a public IP address' });
+    next();
+};
+
+// Route-param twin of requirePublicIP for /api/v1/ip/:ip. Express only reaches
+// the handler when the segment is present, so the missing case is defensive;
+// it keeps both variants answering identically if that ever changes.
+export const requirePublicIPParam = (paramName = 'ip') => (req, res, next) => {
+    if (!acceptPublicIP(req.params?.[paramName], res)) {
+        return;
     }
     next();
 };

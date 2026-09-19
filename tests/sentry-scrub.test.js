@@ -108,6 +108,65 @@ describe('scrubSpan', () => {
     });
 });
 
+describe('key-in-path credentials', () => {
+    it('redacts the ipqs key segment while keeping the queried address', () => {
+        assert.equal(
+            redactUrlQuery('https://ipqualityscore.com/api/json/ip/SECRETKEY/1.2.3.4?strictness=1'),
+            'https://ipqualityscore.com/api/json/ip/[redacted]/1.2.3.4?strictness=1'
+        );
+    });
+
+    it('redacts it inside a span description as well', () => {
+        const span = { description: 'GET https://ipqualityscore.com/api/json/ip/SECRETKEY/1.2.3.4?strictness=1' };
+        assert.equal(
+            scrubSpan(span).description,
+            'GET https://ipqualityscore.com/api/json/ip/[redacted]/1.2.3.4?strictness=1'
+        );
+    });
+
+    it('redacts the root-relative form a client span carries', () => {
+        // url.path / http.target hold no host, so the absolute-URL anchor
+        // cannot apply — the path shape has to match on its own.
+        assert.equal(
+            redactUrlQuery('/api/json/ip/SECRETKEY/1.2.3.4'),
+            '/api/json/ip/[redacted]/1.2.3.4'
+        );
+    });
+
+    it('redacts it on any host, not just the ipqs one', () => {
+        // Deliberate over-redaction: a stray path segment costs debugging
+        // context, a leaked key costs the deployment's quota.
+        assert.equal(
+            redactUrlQuery('https://api.example.com/api/json/ip/notakey/1.2.3.4'),
+            'https://api.example.com/api/json/ip/[redacted]/1.2.3.4'
+        );
+    });
+
+    it('redacts it in the span attributes that carry only a path', () => {
+        const span = { data: {
+            'url.path': '/api/json/ip/SECRETKEY/1.2.3.4',
+            'http.target': '/api/json/ip/SECRETKEY/1.2.3.4?strictness=1',
+        } };
+        const out = scrubSpan(span);
+        assert.equal(out.data['url.path'], '/api/json/ip/[redacted]/1.2.3.4');
+        assert.equal(out.data['http.target'], '/api/json/ip/[redacted]/1.2.3.4?strictness=1');
+    });
+});
+
+describe('outgoing header credentials', () => {
+    it('redacts sensitive request-header attributes, keeps the rest', () => {
+        const span = { data: {
+            'http.request.header.key': 'SECRETKEY',
+            'http.request.header.authorization': 'Bearer x',
+            'http.request.header.accept': 'application/json',
+        } };
+        const out = scrubSpan(span);
+        assert.equal(out.data['http.request.header.key'], '[redacted]');
+        assert.equal(out.data['http.request.header.authorization'], '[redacted]');
+        assert.equal(out.data['http.request.header.accept'], 'application/json');
+    });
+});
+
 describe('scrubEventRequest', () => {
     it('redacts the request URL and query_string, keeps debug params', () => {
         const event = {
@@ -136,5 +195,29 @@ describe('scrubEventRequest', () => {
     it('tolerates events without request context', () => {
         const event = { message: 'plain' };
         assert.equal(scrubEventRequest(event), event);
+    });
+
+    it('redacts the caller credential from the request headers', () => {
+        const event = { request: {
+            url: 'https://localhost:11966/api/v1/ip/8.8.8.8',
+            headers: {
+                'x-api-key': 'uk_test_aaaaaaaabbbb',
+                Authorization: 'Bearer must-not-leak',
+                cookie: 'session=must-not-leak',
+                accept: 'application/json',
+                'user-agent': 'curl/8',
+            },
+        } };
+        const out = scrubEventRequest(event);
+        assert.equal(out.request.headers['x-api-key'], '[redacted]');
+        assert.equal(out.request.headers.Authorization, '[redacted]');
+        assert.equal(out.request.headers.cookie, '[redacted]');
+        assert.equal(out.request.headers.accept, 'application/json');
+        assert.equal(out.request.headers['user-agent'], 'curl/8');
+    });
+
+    it('tolerates a request context with no headers', () => {
+        const event = { request: { url: 'https://localhost:11966/api/v1/ip' } };
+        assert.equal(scrubEventRequest(event).request.headers, undefined);
     });
 });
