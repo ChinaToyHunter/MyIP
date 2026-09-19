@@ -72,21 +72,48 @@
                   "org": { "type": "string" }
                 }
               },
-              "quality": {
-                "type": "object",
-                "description": "Per-provider blocks, keyed by provider name. Absent key = that provider failed (see errors[]).",
-                "properties": {
-                  "ipapi_is": { "$ref": "#/components/schemas/IpapiIsQuality" },
-                  "ipinfo": { "$ref": "#/components/schemas/IpinfoQuality" },
-                  "ippure": { "$ref": "#/components/schemas/IppureQuality" }
-                }
-              },
+              "quality": { "$ref": "#/components/schemas/ProviderQuality" },
               "errors": {
                 "type": "array",
                 "items": { "$ref": "#/components/schemas/SourceError" },
                 "description": "Per-source failure list. Empty array = every source succeeded; a missing quality key always has a matching entry here."
               }
             }
+          }
+        }
+      },
+      "ProviderQuality": {
+        "type": "object",
+        "description": "Per-provider blocks, keyed by provider name. Absent key = that provider failed (see errors[]) or is not enabled for this route. ippure and ipgeolocation appear on the self route only — the first answers about the connection peer, the second is opt-in per deployment (V1_IPPURE_ENABLED / V1_IPGEOLOCATION_ENABLED, both off by default). The remaining key-driven sources appear on every route.",
+        "properties": {
+          "ipapi_is": { "$ref": "#/components/schemas/IpapiIsQuality" },
+          "ipinfo": { "$ref": "#/components/schemas/IpinfoQuality" },
+          "ippure": { "$ref": "#/components/schemas/IppureQuality" },
+          "abuseipdb": { "$ref": "#/components/schemas/AbuseIpdbQuality" },
+          "ipqs": { "$ref": "#/components/schemas/IpqsQuality" },
+          "ipgeolocation": { "$ref": "#/components/schemas/IpgeolocationQuality" }
+        }
+      },
+      "QualityResponse": {
+        "type": "object",
+        "description": "Provider verdicts without the geo block — for consumers that only need proxy/VPN/abuse signals and want neither the MaxMind payload nor its attribution requirement.",
+        "required": ["schema_version", "query", "quality", "errors"],
+        "properties": {
+          "schema_version": { "type": "string", "enum": ["1.0"] },
+          "query": {
+            "type": "object",
+            "required": ["ip", "mode", "timestamp", "duration_ms"],
+            "properties": {
+              "ip": { "type": "string" },
+              "mode": { "type": "string", "enum": ["quality"] },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "duration_ms": { "type": "integer" }
+            }
+          },
+          "quality": { "$ref": "#/components/schemas/ProviderQuality" },
+          "errors": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SourceError" }
           }
         }
       },
@@ -121,11 +148,49 @@
       },
       "IppureQuality": {
         "type": "object",
-        "description": "Self-lookup only. IPPure answers about the direct connection peer; a subject mismatch is rejected with a 422 errors[] entry rather than served as visitor data.",
+        "description": "Self-lookup only, and only when V1_IPPURE_ENABLED is on. IPPure answers about the direct connection peer; a subject mismatch is rejected with a 422 errors[] entry rather than served as visitor data.",
         "properties": {
           "fraud_score": { "type": ["integer", "null"] },
           "is_residential": { "type": ["boolean", "null"] },
           "is_broadcast": { "type": ["boolean", "null"] },
+          "raw": { "type": "object" }
+        }
+      },
+      "AbuseIpdbQuality": {
+        "type": "object",
+        "description": "Crowd-sourced abuse confidence over the last 90 days (ABUSEIPDB_API_KEY).",
+        "properties": {
+          "score": { "type": ["integer", "null"], "description": "abuseConfidenceScore, 0-100." },
+          "total_reports": { "type": ["integer", "null"] },
+          "num_distinct_users": { "type": ["integer", "null"] },
+          "last_reported_at": { "type": ["string", "null"], "format": "date-time" },
+          "is_whitelisted": { "type": ["boolean", "null"] },
+          "raw": { "type": "object" }
+        }
+      },
+      "IpqsQuality": {
+        "type": "object",
+        "description": "Fraud score plus proxy/VPN/Tor verdicts (IPQS_API_KEY). IPQS reports quota and key failures as HTTP 200 with success:false; those become errors[] entries, never an all-false quality block.",
+        "properties": {
+          "fraud_score": { "type": ["integer", "null"], "description": "0-100." },
+          "proxy": { "type": "boolean" },
+          "vpn": { "type": "boolean" },
+          "tor": { "type": "boolean" },
+          "is_crawler": { "type": "boolean" },
+          "recent_abuse": { "type": "boolean" },
+          "raw": { "type": "object" }
+        }
+      },
+      "IpgeolocationQuality": {
+        "type": "object",
+        "description": "Threat signals from ipgeolocation.io (IPGEOLOCATION_API_KEY). Self-lookup only, and only when V1_IPGEOLOCATION_ENABLED is on. The security block needs a paid plan; on a free plan every field here is null while raw.asn / raw.company are still populated.",
+        "properties": {
+          "threat_score": { "type": ["integer", "null"] },
+          "is_vpn": { "type": ["boolean", "null"] },
+          "is_proxy": { "type": ["boolean", "null"] },
+          "is_tor": { "type": ["boolean", "null"] },
+          "is_relay": { "type": ["boolean", "null"] },
+          "is_cloud_provider": { "type": ["boolean", "null"] },
           "raw": { "type": "object" }
         }
       }
@@ -135,7 +200,7 @@
     "/api/v1/ip": {
       "get": {
         "summary": "Look up the calling visitor's own IP",
-        "description": "Anonymous self lookup. The inspected address is resolved from the proxy header chain (cf-connecting-ip → x-forwarded-for → req.ip) and cannot be overridden by the caller. Results aggregate every configured provider in parallel under a shared 8s deadline; per-source failures land in lookup.errors[] without failing the request.",
+        "description": "Anonymous self lookup. The inspected address comes from Express's configured trusted-proxy chain (TRUST_PROXY; exactly one loopback hop by default), not from caller-selected headers or parameters. Results aggregate every configured provider in parallel under a shared 8s deadline; per-source failures land in lookup.errors[] without failing the request.",
         "security": [],
         "parameters": [
           {
@@ -161,6 +226,89 @@
           },
           "503": {
             "description": "Every lookup source failed for this request.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/ip/{ip}": {
+      "get": {
+        "summary": "Look up an arbitrary IP address",
+        "description": "Key-gated lookup of an address the caller supplies. Requires a valid X-API-Key; anonymous callers are limited to the self route. The address is validated before any upstream call (malformed and reserved space are refused), then the same aggregation runs as for the self lookup, over the key-driven sources. IPPure is never consulted here: it answers about the direct connection peer, so it would describe the deployment's own egress.",
+        "security": [{ "ApiKeyHeader": [] }],
+        "parameters": [
+          {
+            "name": "ip",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "IPv4 or IPv6 address. Reserved space (RFC 1918, loopback, CGNAT, link-local, documentation, ...) is rejected with 400."
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "default": "en" },
+            "description": "BCP-47 tag for localized MaxMind names; normalized to the GeoLite2 supported set."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregated lookup payload (possibly partial — check lookup.errors).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LookupResponse" } } }
+          },
+          "400": {
+            "description": "Address is missing, malformed, or not publicly routable.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "429": {
+            "description": "Rate limit exceeded (key tier).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "Every lookup source failed for this request.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/quality/{ip}": {
+      "get": {
+        "summary": "Provider verdicts for an arbitrary IP address",
+        "description": "The same providers, address validation and failure accounting as /api/v1/ip/{ip}, with the geo block omitted. MaxMind is never consulted, so the payload carries no geo attribution obligation. Both self-route-only sources are absent here too: IPPure answers about the direct connection peer, and ipgeolocation is opt-in per deployment.",
+        "security": [{ "ApiKeyHeader": [] }],
+        "parameters": [
+          {
+            "name": "ip",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "IPv4 or IPv6 address. Reserved space (RFC 1918, loopback, CGNAT, link-local, documentation, ...) is rejected with 400."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aggregated quality payload (possibly partial — check errors).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QualityResponse" } } }
+          },
+          "400": {
+            "description": "Address is missing, malformed, or not publicly routable.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": {
+            "description": "Missing or invalid X-API-Key.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "429": {
+            "description": "Rate limit exceeded (key tier).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "Every quality source failed for this request.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
           }
         }

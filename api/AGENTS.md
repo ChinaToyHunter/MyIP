@@ -67,10 +67,13 @@ currently `dns-resolvers.js`, the country-annotated resolver list behind
   are automatic; caught failures stay on the logger — a hook in
   `common/logger.js` mirrors warn+ to Sentry Logs and elevates error+ to
   grouped, alertable Issues. Periodic jobs wrap their tick in
-  `common/sentry-cron.js` for Crons check-ins. API-key query params
-  (`key` / `token` / …) are redacted from telemetry URLs
-  (`common/sentry-scrub.js`, wired as `beforeBreadcrumb` / `beforeSendSpan`
-  / `beforeSend` hooks).
+  `common/sentry-cron.js` for Crons check-ins. Credentials are redacted from
+  telemetry (`common/sentry-scrub.js`, wired as `beforeBreadcrumb` /
+  `beforeSendSpan` / `beforeSend` hooks) wherever they can appear: API-key
+  query params (`key` / `token` / …), path-segment keys on upstreams shaped
+  like IPQS, the span's `http.request.header.*` attributes, and the caller's
+  own `X-API-Key` / `Authorization` on the event's request context. Adding a
+  source whose key rides somewhere else means teaching that file the shape.
 
 ## Security & Boundaries
 
@@ -88,6 +91,10 @@ these checks:
   documentation, …) is rejected here, so no geo source is ever asked about an
   address it can't answer for — `isUsablePublicIP` in `common/valid-ip.js` is
   the single definition, shared with the front-end IP forms.
+- `requirePublicIPParam()` — the route-param twin for `/api/v1/ip/:ip` and
+  `/api/v1/quality/:ip`, same three-way failure split and messages, read from
+  `req.params`. Mounted after `requireApiKey` so an anonymous caller learns
+  nothing about the address.
 - `requireValidDomain()` — `?domain=`, lowercases in place so the edge cache
   sees one canonical key. `isValidDomain` allows a leading underscore on any
   label but the TLD, so RFC 8552 service names (`_dmarc.…`, `_domainkey.…`)

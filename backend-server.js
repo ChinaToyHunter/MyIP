@@ -7,11 +7,13 @@ import { slowDown } from 'express-slow-down'
 import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
 import logger from './common/logger.js';
-import { requireReferer, requirePublicIP, requireValidPrefix, requireValidASN, requireValidDomain, requireValidProviderId,
-    requireValidRecordType, requireValidReportId } from './common/guards.js';
+import { requireReferer, requirePublicIP, requirePublicIPParam, requireValidPrefix, requireValidASN, requireValidDomain, requireValidProviderId,
+    requireValidRecordType, requireValidReportId, requireApiKey } from './common/guards.js';
 import { withTimeZone } from './common/ip-timezone.js';
 import { getClientIp } from './common/client-ip.js';
 import { isValidApiKey } from './common/api-keys.js';
+import { skipLegacyRateLimit, skipLegacySlowDown } from './common/rate-limit-policy.js';
+import { getTrustProxy } from './common/security-config.js';
 
 // Backend APIs
 import mapHandler from './api/google-map.js';
@@ -48,6 +50,8 @@ import getUserinfo from './api/get-user-info.js';
 import updateUserAchievement from './api/update-user-achievement.js';
 // Unified v1 API
 import selfIpHandler from './api/v1/self-ip.js';
+import lookupIpHandler from './api/v1/lookup-ip.js';
+import qualityIpHandler from './api/v1/quality-ip.js';
 import openApiV1Handler from './api/v1/openapi.js';
 import { reloadMaxMindDatabases, startMaxMindFileWatcher } from './common/maxmind-service.js';
 import { startMaxMindAutoUpdate, bootstrapMaxMindIfMissing } from './common/maxmind-updater.js';
@@ -60,6 +64,10 @@ initUpstreamUserAgent();
 
 const app = express();
 const backEndPort = parseInt(process.env.BACKEND_PORT || 11966, 10);
+// Trust exactly one loopback proxy by default (the bundled frontend server or
+// Vite). Other deployment topologies must provide an explicit proxy-addr
+// IP/subnet list; raw forwarding headers never bypass this trust walk.
+const trustProxy = getTrustProxy();
 // Local rate-limit ledger file — opt-in: empty means no file is written.
 // The logger.warn in the limiter handler always fires regardless (and flows
 // to Sentry Logs when a backend DSN is configured), so the file only adds a
@@ -69,7 +77,7 @@ const blackListIPLogFilePath = process.env.SECURITY_BLACKLIST_LOG_FILE_PATH || '
 const rateLimitSet = parseInt(process.env.SECURITY_RATE_LIMIT || 0, 10);
 const speedLimitSet = parseInt(process.env.SECURITY_DELAY_AFTER || 0, 10);
 
-app.set('trust proxy', 1);
+app.set('trust proxy', trustProxy);
 
 // HTTP request logging on /api/* — off by default to keep pm2 logs lean.
 // Set LOG_HTTP=true in .env to enable. Mounted before the rate limiter
@@ -158,10 +166,9 @@ const rateLimiter = rateLimit({
     windowMs: 20 * 60 * 1000,
     max: rateLimitSet,
     message: 'Too Many Requests',
-    // The Sentry tunnel is exempted — it has its own limiter at the route.
-    // Telemetry sharing the app quota is how reporting silently dies: one
-    // 429 and the browser SDK drops every event for the next minute.
-    skip: (req) => req.path === '/monitoring',
+    // Sentry uses its route-local limiter; /v1 uses the dedicated per-minute
+    // limiter below rather than stacking this legacy 20-minute bucket.
+    skip: skipLegacyRateLimit,
     handler: (req, res, next) => {
         const ip = getClientIp(req);
         // Log on the exact transition into rate-limited state — not every
@@ -184,7 +191,7 @@ const speedLimiter = slowDown({
     delayAfter: speedLimitSet,
     delayMs: (used, req) => (used - req.slowDown.limit) * 400,
     maxDelayMs: 5000,
-    skip: (req) => req.path === '/monitoring' || req.path === '/maxmind',
+    skip: skipLegacySlowDown,
 })
 
 if (rateLimitSet !== 0) {
@@ -261,6 +268,15 @@ const v1Limiter = rateLimit({
 });
 app.use('/api/v1', v1Limiter);
 app.get('/api/v1/ip', selfIpHandler);
+// Arbitrary-IP lookup: key first (an anonymous caller learns nothing about the
+// address), then the address guard, so a malformed/private target never
+// reaches an upstream quota. The self route stays above and unrelated — a
+// caller can only ever point this one at an address they already know.
+app.get('/api/v1/ip/:ip', requireApiKey, requirePublicIPParam(), lookupIpHandler);
+// Same target and the same guards as the route above, minus the geo block:
+// consumers that only need the provider verdicts get a smaller payload and
+// never touch the MaxMind data (or its attribution requirement).
+app.get('/api/v1/quality/:ip', requireApiKey, requirePublicIPParam(), qualityIpHandler);
 app.get('/api/v1/openapi.json', cacheable(ONE_HOUR_CACHE), openApiV1Handler);
 
 // Cacheable routes — TTLs picked against each upstream's natural refresh cadence.

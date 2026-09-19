@@ -1,20 +1,22 @@
-// Derive the visitor's own public IP from the proxy header chain.
-//
-// Extracted from backend-server.js, where this logic was private to the rate
-// limiter's logging path. The v1 API's self-lookup endpoint (/api/v1/ip) is a
-// second consumer: it needs the visitor's address to answer "what is my IP",
-// and the two consumers must agree on precedence or the rate-limit ledger and
-// the self-lookup can silently disagree about who a request came from.
-//
-// Precedence mirrors how the deployment stack actually forwards:
-//   cf-connecting-ip (Cloudflare) → first x-forwarded-for hop →
-//   cf-connecting-ipv6 (legacy CF v6 header) → req.ip (trust-proxy-adjusted).
-// The result is NOT validated here — callers that feed it upstream must run
-// it through valid-ip.js themselves, because a spoofed header chain yields
-// garbage, not an error.
+// Return the client address that Express resolved from the socket peer and its
+// configured trusted-proxy chain. Raw forwarding headers are never read here:
+// accepting them outside Express's trust boundary would let a caller turn the
+// anonymous self-lookup endpoint into an arbitrary-IP lookup and evade IP
+// rate-limit buckets.
+
+// Node reports IPv4 peers as IPv4-mapped IPv6 (::ffff:a.b.c.d) whenever the
+// listener is dual-stack, which it is by default. That spelling is not a valid
+// address anywhere downstream in this codebase — the IP parsers reject it and
+// the IPPure subject check would never match — so the transport wrapper is
+// unwrapped here, at the one place every backend reads the visitor address
+// from.
+const IPV4_MAPPED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
+
 export const getClientIp = (req) => {
-    const cfIp = req.headers['cf-connecting-ip'];
-    const forwardedIps = req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0] : null;
-    const cfIpV6 = req.headers['cf-connecting-ipv6'];
-    return cfIp || forwardedIps || cfIpV6 || req.ip;
+    const ip = req.ip;
+    if (typeof ip !== 'string') {
+        return ip;
+    }
+    const mapped = IPV4_MAPPED.exec(ip);
+    return mapped ? mapped[1] : ip;
 };
