@@ -65,11 +65,19 @@ use npm / yarn — they'd produce a competing lockfile.
 ├── common/                      ← code shared by both halves (valid-ip /
 │                                  fetch-with-timeout / guards / logger / …)
 ├── tests/                       ← Node test runner specs
+├── ipquality-sidecar/           ← the egress probe, a separate container and a
+│                                  separate build context (AGPL-3.0 upstream,
+│                                  pinned by commit SHA); never part of the main
+│                                  image, reached over HTTP
 ├── backend-server.js            ← Express app (default port 11966)
 ├── sentry-instrument.js         ← backend Sentry bootstrap via `node --import`;
 │                                  no-op without SENTRY_DSN_BACKEND
 ├── frontend-server.js           ← static server for `pnpm start` (+ SPA fallback)
 ├── ecosystem.config.cjs         ← pm2 definitions (carries the `--import` flag)
+├── docker-compose.yml           ← the fork's two-container stack (convenience,
+│                                  not a deployment promise)
+├── UNIFIED_API.md               ← the fork's `/api/v1/` surface: endpoints,
+│                                  provider keys, probe rules, attribution
 ├── index.html                   ← Vite entry
 ├── vite.config.js / jsconfig.json (alias @ → frontend/) / package.json
 ```

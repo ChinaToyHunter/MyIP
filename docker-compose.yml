@@ -1,11 +1,66 @@
-# docker-compose up -d
-version: '3'
+# Unified IP API — the fork's two containers.
+#
+#   docker compose up -d --build
+#
+# `unified-ip-api` is the MyIP application (SPA + Express, plus the v1 surface
+# this fork adds). `ipquality-sidecar` is the AGPL-licensed IPQuality probe
+# wrapped in a small HTTP service; it builds from its own directory so none of
+# that code enters the main image.
+#
+# The sidecar publishes no host port. It is reachable only from its sibling, and
+# its /latest endpoint hands out this deployment's egress address to whoever can
+# reach it — so a private network is the point, and the shared token below is a
+# second lock on the same door.
+#
+# The API does not wait for the sidecar to be healthy: lookups are most of the
+# v1 surface and need nothing from it, so a sidecar that fails to start should
+# cost one route (503), not the whole deployment. The first probe issued before
+# the sidecar is listening returns 502 and succeeds on retry.
+#
+# This file is the convenience stack the project brief asks for, not a
+# deployment promise. A production host (reverse proxy, pm2, an existing TLS
+# terminator) wires the same two pieces its own way.
+
 services:
-    myip:
-        container_name: myip
-        image: jason5ng32/myip:latest # my-app: x.x.x
+    unified-ip-api:
+        container_name: unified-ip-api
+        build: .
+        image: unified-ip-api:local
         stdin_open: true # docker run -i interactive mode
         tty: true        # docker run -t terminal mode
-        restart: always # restart policy / on-failure:5 restart 5 times / always restart forever / unless-stopped unless stopped / no never restart
+        restart: always
         ports:
             - "18966:18966"
+        # The backend reads this itself; compose loads it here so the container
+        # gets the same provider keys a `pnpm dev` run does. Every v1 source is
+        # optional — an unset key drops that source and records it in errors[].
+        env_file:
+            - .env
+        environment:
+            # These two override whatever .env holds, so the service name stays
+            # authoritative inside the compose network. The token is read from
+            # the host .env and handed to both containers — one value, both
+            # sides of the X-Probe-Token check.
+            IPQUALITY_SIDECAR_URL: http://ipquality-sidecar:8080
+            IPQUALITY_SIDECAR_TOKEN: ${IPQUALITY_SIDECAR_TOKEN:-}
+        depends_on:
+            - ipquality-sidecar
+
+    ipquality-sidecar:
+        container_name: ipquality-sidecar
+        build: ./ipquality-sidecar
+        image: ipquality-sidecar:local
+        restart: always
+        # `expose` documents the port for anything else on the network without
+        # publishing it to the host. Set IPQUALITY_SIDECAR_TOKEN in .env to
+        # require it on /run and /latest; /healthz stays open for the image's
+        # own HEALTHCHECK.
+        expose:
+            - "8080"
+        environment:
+            PROBE_TOKEN: ${IPQUALITY_SIDECAR_TOKEN:-}
+        # One run fans out to hundreds of third-party endpoints over 30-90s, so
+        # the container gets a little longer than the default grace period to
+        # finish on a clean stop. The probe's own deadlines (PROBE_SOFT_TIMEOUT
+        # / PROBE_HARD_TIMEOUT) come from the image.
+        stop_grace_period: 30s

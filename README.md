@@ -129,6 +129,24 @@ docker run -d -p 18966:18966 \
 
 Everything else — optional API keys, security & rate limiting, logging, Sentry, the curl API domains — is documented in the [Environment Variables reference](https://docs.ipcheck.ing/developer/reference/environment-variables).
 
+## 🔌 Unified IP API (fork addition)
+
+This fork adds a machine-consumed `/api/v1/` surface on top of the toolbox
+above: an aggregated IP lookup for arbitrary addresses, an anonymous self
+lookup, and an egress probe that reports what the internet sees when *this
+deployment* connects out (via [IPQuality](https://github.com/xykt/IPQuality) in
+its own container). The upstream SPA and its `/api/*` endpoints are unchanged.
+
+- **[UNIFIED_API.md](UNIFIED_API.md)** — endpoints, provider keys and their free
+  tiers, the probe's masking and caching rules, attribution, and how to run the
+  two-container stack.
+- **[api/v1/openapi.json](api/v1/openapi.json)** — the contract, also served at
+  `/api/v1/openapi.json`.
+
+In short: `docker compose up -d --build` starts both containers, and the API
+keys — the ones this fork issues (`UNIFIED_API_KEYS`) and the ones the upstream
+providers require — are all environment variables, documented key by key.
+
 ## 📖 Documentation
 
 Full guides live in the MyIP Docs Center: **[docs.ipcheck.ing](https://docs.ipcheck.ing)**

@@ -168,9 +168,16 @@ to the upstream that owns the auth context.
 - Handlers get smoke tests in `tests/api-handlers.test.js`: method gating,
   param branches, "API key missing" early returns. Most are covered; a new
   or touched handler ships its block in the same change.
+- The `/api/v1/*` surface is covered in its own files instead — `tests/v1-api.test.js`
+  for guards, key store, lookup and quality handlers, `tests/v1-probe.test.js`
+  for the egress probe pipeline. Those handlers keep no defensive method gate
+  (the route is the only gate a machine caller meets), so there is no branch to
+  assert on.
 - Never hit real upstreams — assert on branches that return before the first
   `fetchUpstream`, or stub `globalThis.fetch` when the behavior under test
   lives past it (google-map stream tests; restored in the shared `afterEach`).
+  A pipeline that takes its `fetcher` as a parameter (the v1 ones do) is driven
+  by injecting it rather than by patching the global.
 - Middleware is covered by `tests/guards.test.js`; don't duplicate its
   assertions per-handler. Fetch timeout/abort behavior:
   `tests/fetch-with-timeout.test.js`.
