@@ -4,6 +4,11 @@
 .claude
 .vscode
 
+# The egress-probe sidecar is AGPL-3.0 code with its own Dockerfile and its own
+# build context (ipquality-sidecar/). It is never part of this image, and the
+# main build has no use for it — keep it out of the context entirely.
+ipquality-sidecar
+
 node_modules
 dist
 logs
