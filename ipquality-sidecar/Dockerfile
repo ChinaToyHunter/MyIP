@@ -29,7 +29,10 @@
 FROM node:24-alpine
 
 ARG IPQUALITY_SHA=2384a67c756eb35231f5982b34731e522be3653e
-ARG IPQUALITY_SHA256=a3622e58c6e0ea125565f89e70c7ada2314d9f5d056eaff426c4bd47ba2a5645
+# Recompute when bumping the pin, from the raw blob itself — not from any local
+# copy, and not after probing: verifies the pristine file this build downloads.
+#   curl -fsSL https://raw.githubusercontent.com/xykt/IPQuality/$SHA/ip.sh | sha256sum
+ARG IPQUALITY_SHA256=b30df5a3c2204276c54e99dcc5080b46f8a627667730aee7de63b109b8ecaecf
 
 # bash         the probe is #!/bin/bash and uses arrays, [[ ]], and process
 #              substitution (`read … < <(stty size)`)
@@ -72,7 +75,10 @@ WORKDIR /opt/ipquality
 RUN set -eux; \
     base="https://raw.githubusercontent.com/xykt/IPQuality/${IPQUALITY_SHA}"; \
     curl -fsSL "$base/ip.sh" -o ip.sh; \
-    echo "${IPQUALITY_SHA256}  ip.sh" | sha256sum -c -; \
+    echo "${IPQUALITY_SHA256}  ip.sh" | sha256sum -c - || { \
+        echo "ip.sh does not match IPQUALITY_SHA256 (got $(sha256sum ip.sh | cut -d' ' -f1), want ${IPQUALITY_SHA256})" >&2; \
+        exit 1; \
+    }; \
     mkdir -p ref; \
     for f in iso3166.json dnsbl.list iata-icao.csv cookies.txt; do \
         curl -fsSL "$base/ref/$f" -o "ref/$f"; \
